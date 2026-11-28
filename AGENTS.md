@@ -64,14 +64,53 @@ are explanations of origin, never dispositions.
   never let cleanup throw over the exception that caused it.
 - Adding a fallback is the operator's decision, not a move you make to keep a run alive.
 
+## Fix the first cause
+
+A fix removes the cause of a failure; closing the one symptom in front of you is not a fix.
+The failure returns from the same cause, or the symptom moves where nobody is looking.
+
+- Before changing code for a failure, name the cause from evidence (a log line, a failing
+  test, the input that reproduces it) and the mechanism that produces it. The commit message
+  of a fix states both: what caused it, and what the change altered.
+- These suppress a symptom and are not fixes unless the cause is named and is the thing
+  suppressed: a broad `except` that makes the error disappear, a branch that special-cases the
+  one input that failed, a retry, a longer timeout or a raised limit that makes a failure rarer.
+- When the cause cannot be reached from where the failure shows, repair the step that produces
+  the bad state, or say plainly what blocks it. A suppression the operator chose to accept is
+  the operator's decision, written next to the code with the cause it leaves standing.
+- The review blocks such a change (`/headspec-review`, lens 5). `headspec-reviewed --digest`
+  prints cheap text signals (a new `except Exception`, a new branch on one literal value, a
+  new retry or raised limit) as hints, never as a gate: a patch cannot be told from a change
+  by text alone, so the judgement stays with the reviewer.
+
+## Run it, never only read it
+
+A change is proven by running it. Reading the diff shows what was meant, not what happens.
+
+- A code change is run on the input that exercises it, and the output is read, before the work
+  is called done.
+- A change to a web page or any UI is proven in a headless browser (Playwright, a dependency of
+  the web projects): load the changed page, drive the changed control, read the browser console
+  and the network responses, and look at a screenshot. A clean console and no failed request are
+  part of the proof; a page that was only read in its source is unproven.
+- A project's own instruction file names its house tool and the folder where proofs live; use
+  those rather than a new script.
+- Where a failure's cause is not visible from its output, attach a debugger (a breakpoint,
+  `pdb`, the browser's devtools protocol) and read the state at the failing step, instead of
+  guessing a second patch from the first one's silence.
+
 ## Names, comments, artifacts
 
 - A name that does not match what the thing does is a defect — fixed on sight, in the same
   commit, not filed as a style preference. (`HEADSPEC.md` §5A governs the other half: one
   concept keeps one name across the repo, and a retired name never returns.)
-- Prefer a name that needs no comment. Comment the non-obvious: why this way, what breaks
-  otherwise, which measurement settled it.
-- Source artifacts — code, comments, specs, commit messages — are written in English
+- The code speaks: a long clear name, plain logic, a small function. A comment goes stale
+  with nothing to fail, so a `#` comment is a defect, whatever it explains (`HEADSPEC.md`
+  §5G). Prose in a source file is only the leading header with the spec, a tool marker
+  (`# type: ignore`, `# noqa`), the module docstring that describes the file, the docstring of
+  a name in the module's interface, and a command line tool's help text. The reason for a
+  decision belongs in the spec's rationale.
+- Source artifacts — code, specs, commit messages — are written in English
   regardless of the language of the conversation.
 - Documentation is written when it is asked for. A file nobody requested is a file nobody
   reads, and it still has to be kept true.

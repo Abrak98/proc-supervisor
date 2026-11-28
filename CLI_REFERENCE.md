@@ -13,6 +13,7 @@ State dir: `$PROC_HOME` (default `~/.local/state/proc/`). All timestamps UTC.
 | `5` | `wait`: the job ended other than `exited` with rc 0 (non-zero or unknown rc, `killed`, `timeout`) |
 | `6` | no launcher backend can fire scheduled jobs (`start --at`, `reschedule`, `launcher`) |
 | `7` | `hook status` / `hook install`: the Claude Code hook is not registered in a config dir |
+| `8` | `kill` / `rm --force`: a member of the job's session is still alive after SIGKILL; the job is not recorded `killed` and the record's `kill_survivors` names the pids |
 
 ## `proc start --name N [--at TIME] [--timeout S] [--cwd D] [--env KEY=VAL]... [--heavy [--force-concurrent]] -- CMD...`
 
@@ -90,7 +91,7 @@ dir and exits 7 when an entry is missing. `unwrap` is the hook itself: it reads 
 JSON on stdin and answers as a PreToolUse hook (exit 2 with the refusing hook's message, or a
 `permissionDecision` of `ask`/`allow`).
 
-## `proc list` / `proc ls [--running] [--scheduled] [--session ID] [--all] [--exited --since HOURS] [--json]`
+## `proc list` / `proc ls [--running] [--scheduled] [--session ID] [--all] [--exited --since HOURS] [--json [--full]]`
 
 Aligned table `NAME PID STATUS ELAPSED TIMEOUT START CMD`; running jobs first, then
 scheduled jobs by start time (`START` holds the scheduled time, `-` otherwise).
@@ -107,6 +108,8 @@ listed (and, being finished, is not shown).
   `--scheduled` to narrow).
 - `--all` — every job in the registry (live folder and history), finished ones included. This
   reads every record, so it is slow on a large registry.
+- `--json --full` — the whole record of each listed job (command, cwd, env, log path; the
+  shape of `status --json`) instead of the light objects; reads each listed job's record.
 - `--exited --since HOURS` — the jobs that ended in the last `HOURS` hours (a positive number),
   read from the live folder and the history day folders that window covers; not combinable with the other
   filters. With `--json` the same light objects as above.
@@ -194,7 +197,11 @@ with rc 0, 5 if it ended any other way, 3 if still running when the cap hits
 
 Cancel a `scheduled` job (status `killed`, nothing signaled) or terminate job `N`; killing
 a running job also drops its next run. SIGTERM the whole session, wait a 10s grace, then SIGKILL
-whatever remains; `--force` sends SIGKILL immediately. Registry-only and
+whatever remains; `--force` sends SIGKILL immediately. Each member is re-checked (starttime
+and session) right before it is signaled, through a pidfd where the kernel has one, so a pid
+reused after the scan is never hit. A descendant that left the session with `setsid()` is not
+reached. If a member is still alive after SIGKILL the job keeps its status, `kill_survivors`
+names the pids and the exit is 8. Registry-only and
 PID-reuse-guarded — if the recorded process is gone/reused, the job is
 reconciled to terminal and nothing is signaled. A cleanly-exited-but-stale job
 is reported as `already exited` with its real exit code.

@@ -16,7 +16,7 @@ import pytest
 
 from proc_lib import cli, core
 
-from .conftest import ns, start, wait_terminal
+from .conftest import ns, reap_terminal, start
 
 T0 = float(int(time.time()))  # "now" of the tests; the clock fixture pins the engine to it
 DAY = 86400.0
@@ -76,7 +76,7 @@ def test_a_job_that_ends_stays_at_its_path_after_wait(capsys):
 
 def test_status_logs_and_list_all_find_a_finished_job_before_and_after_the_sweep(clock, capsys):
     start("job2", "bash", "-c", "echo found-me")
-    wait_terminal("job2")
+    reap_terminal("job2")  # no wall-clock deadline: it ends when the wrapper is reaped
     for sweep in (False, True):
         if sweep:
             clock[0] = T0 + 2 * DAY  # the first call of a day two days on
@@ -292,3 +292,12 @@ def test_the_fast_list_parser_takes_exited_and_since():
     assert cli._list_args(["--since=0.5", "--exited"]).since == 0.5
     assert cli._list_args(["--since", "x"]) is None
     assert cli._list_args([]).exited is False
+
+
+def test_the_sweep_judges_retention_by_the_clock_it_was_given():
+    """housekeeping(now=...) carries its clock into the archive step: a job that ended
+    just now is past retention for a sweep run 30 days later, with the engine clock real."""
+    seed("old1", T0, live=True)
+    core.housekeeping(now=T0 + 30 * DAY)
+    assert not (core.BASE / "old1.json").exists()
+    assert not list(hist().glob("*/old1.json"))

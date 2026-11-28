@@ -112,6 +112,14 @@ and without ever risking a signal reaching a PID that isn't actually the job it 
   process group, so a pgid-only signal would never reach it. Session id is inherited by every
   descendant, survives reparenting to init, and is not touched by `timeout` — the one property
   a signal-delivery mechanism needs here.
+- **Each session member is re-verified right before its signal.** The scan of `/proc`
+  (`_session_scan`) records every member's starttime; `_signal_member` pins the process with a
+  pidfd (`os.pidfd_open`), re-reads `/proc/<pid>/stat`, and signals through the pidfd
+  (`signal.pidfd_send_signal`) only when starttime and session still match and the process is
+  not dead, so a pid freed and reused between the scan and the signal is never hit. Without
+  pidfd support (an old kernel) the same check runs and a plain `os.kill` follows, leaving a
+  window of microseconds rather than the scan's duration. Known limit, by design: a
+  descendant that calls `setsid()` leaves the session and is no longer reached by `kill`.
 - **`.rc` sidecar for the real exit code.** `proc` is never the parent of the detached job
   across separate CLI invocations, so it cannot `waitpid` for an exit code. The launched
   command is wrapped in a small bash script that captures `$?` and writes it to a `.rc` file
@@ -377,6 +385,12 @@ by an older version (no `env`) is listed, reconciled, waited on and killed uncha
 - `proc_lib.heavy_job_lock` (`specs/proc_lib/heavy_job_lock.spec.md`) — optional RAM-exclusivity
   check/claim invoked from `cmd_start` when `args.heavy` is set.
 - `proc_lib.cost` (`specs/proc_lib/cost.spec.md`) — the cost line and alert of a launch pass.
+- The engine is split into `proc_lib.procfs` (`specs/proc_lib/procfs.spec.md`),
+  `proc_lib.registry` (`specs/proc_lib/registry.spec.md`), `proc_lib.render`
+  (`specs/proc_lib/render.spec.md`), `proc_lib.spawn` (`specs/proc_lib/spawn.spec.md`) and
+  `proc_lib.commands` (`specs/proc_lib/commands.spec.md`), joined by `proc_lib.corelink`
+  (`specs/proc_lib/corelink.spec.md`); `proc_lib.core` re-exports their names, so this contract
+  holds for the whole and every name it states is reachable as `core.<name>`.
 
 - `cmd_start` with `args.at` — parse an ISO 8601 time that carries a zone (naive or malformed
   -> `EXIT_USAGE`), ensure the launcher works (`EXIT_LAUNCHER` otherwise), write a `scheduled`
@@ -410,6 +424,10 @@ by an older version (no `env`) is listed, reconciled, waited on and killed uncha
 - GIVEN a session member survives SIGTERM and SIGKILL WHEN `cmd_kill` finishes its drain THEN the
   status is not `killed`, the record's `kill_survivors` and stderr name the pids and the exit
   code is `EXIT_KILL_SURVIVORS` (`test_kill.py`).
+- GIVEN a session member whose pid now has another starttime than the scan recorded (reuse), or
+  that left the session, or is a zombie WHEN `_signal_member` / `_signal_session` run THEN it
+  is not signaled and not counted; with matching identity it is signaled, with and without
+  pidfd support (`test_safety.py`).
 - GIVEN `proc start` immediately followed by `proc kill` (before grandchildren fork) WHEN the
   kill runs THEN no descendant escapes (`test_kill.py`).
 - GIVEN a log whose lines carry times WHEN `cmd_logs --since TS` runs with `TS` between two of

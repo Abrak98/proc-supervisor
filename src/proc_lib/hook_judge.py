@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from proc_lib.claude_hook import _is_assignment, _skip_substitution, _words
+from proc_lib.claude_hook import is_assignment, shell_words, skip_substitution
 
 __all__ = [
     "DEFAULT_HOOK_TIMEOUT",
@@ -100,7 +100,7 @@ def _condition_commands(command: str, depth: int = 0) -> tuple[list[str], bool, 
     if depth > 32:
         return [], True, True
     command = command.replace("\\\n", "")
-    words = _words(command)
+    words = shell_words(command)
     candidates: list[str] = []
     segments: dict[int, list[str]] = {}
     expanded = uncertain = False
@@ -117,7 +117,7 @@ def _condition_commands(command: str, depth: int = 0) -> tuple[list[str], bool, 
                 quote = "" if quote else c
             elif quote != "'" and c in "$`":
                 expanded = True
-                end = _skip_substitution(raw, i)
+                end = skip_substitution(raw, i)
                 if c == "`" or raw[i : i + 2] == "$(":
                     body = raw[i + 1 : end - 1] if c == "`" else raw[i + 2 : end - 1]
                     nested, _, unknown = _condition_commands(body, depth + 1)
@@ -134,7 +134,7 @@ def _condition_commands(command: str, depth: int = 0) -> tuple[list[str], bool, 
         ):
             continue
         segment = segments.setdefault(word.segment, [])
-        if not segment and _is_assignment(raw):
+        if not segment and is_assignment(raw):
             continue
         if word.command and word.value in {
             "if",

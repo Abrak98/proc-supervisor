@@ -27,7 +27,15 @@ from __future__ import annotations
 import os
 import sys
 
-__all__ = ["START_FLAG_OPTIONS", "START_VALUE_OPTIONS", "main", "unwrap_command"]
+__all__ = [
+    "START_FLAG_OPTIONS",
+    "START_VALUE_OPTIONS",
+    "is_assignment",
+    "main",
+    "shell_words",
+    "skip_substitution",
+    "unwrap_command",
+]
 
 # Every option of `proc start`; tests/test_claude_hook.py compares these two sets with the
 # real parser, so a new option fails a test instead of mis-reading a call.
@@ -62,7 +70,7 @@ _REDIRECT_CHARS = "<>"
 # --------------------------------------------------------------------------- unwrapping
 
 
-def _is_assignment(value: str) -> bool:
+def is_assignment(value: str) -> bool:
     """`NAME=...` with NAME a shell identifier (what a regex `[A-Za-z_][A-Za-z0-9_]*=` matches
     at the start; written by hand because this module must not import `re`)."""
     name, equals, _ = value.partition("=")
@@ -130,7 +138,7 @@ def _scan_word(text: str, i: int) -> tuple[int, str, bool]:
             i += 1
         elif c == "$" or c == "`":
             literal = False
-            end = _skip_substitution(text, i)
+            end = skip_substitution(text, i)
             out.append(text[i:end])
             i = end
         else:
@@ -141,7 +149,7 @@ def _scan_word(text: str, i: int) -> tuple[int, str, bool]:
     return min(i, n), "".join(out), literal
 
 
-def _skip_substitution(text: str, i: int) -> int:
+def skip_substitution(text: str, i: int) -> int:
     """End of the `$(...)`, `${...}`, `$name` or backtick span at text[i]."""
     n = len(text)
     if text[i] == "`":
@@ -179,7 +187,7 @@ def _skip_heredoc_bodies(text: str, i: int, pending: list[tuple[str, bool]]) -> 
     return i
 
 
-def _words(text: str) -> list[_Word]:
+def shell_words(text: str) -> list[_Word]:
     words: list[_Word] = []
     n = len(text)
     i = 0
@@ -234,7 +242,7 @@ def _words(text: str) -> list[_Word]:
             )
             if redirect_next:
                 redirect_next = False
-            elif command_position and (_is_assignment(value) or value in _TRANSPARENT):
+            elif command_position and (is_assignment(value) or value in _TRANSPARENT):
                 pass
             else:
                 command_position = False
@@ -284,7 +292,7 @@ def unwrap_command(command: str) -> str | None:
         return None
     changed = False
     for _ in range(8):  # `proc start -- proc start -- cmd` nests
-        words = _words(command)
+        words = shell_words(command)
         spans = [
             span
             for k, w in enumerate(words)

@@ -6,7 +6,9 @@ Launch long-running processes (`research run`, test suites, agent runs, smoke
 tests, builds) **detached**, then monitor, tail, wait on, and kill them through
 one standardized, logged, registry-backed interface — so an autonomous agent
 (or a human) never hangs on a foreground command or an interactive `kill`, and
-never loses track of a job across a WSL crash.
+never loses track of a job across a crash of the agent or its session. The registry
+survives a WSL restart; a process that was running when WSL stopped does not, and is
+reported as finished with whatever exit code it left.
 
 stdlib-only at runtime, by design: a process supervisor must not depend on
 anything that could itself break the very runs it manages.
@@ -59,17 +61,21 @@ backward compatible, so the new version lists, waits on and kills them.
 | Command | What it does |
 | --- | --- |
 | `proc start --name N [--timeout S] [--cwd D] [--env KEY=VAL]... -- CMD...` | Launch `CMD` detached, return immediately. With `--timeout` the OS hard-kills it after `S` seconds (coreutils `timeout`: SIGTERM, then SIGKILL after a 10s grace). `--env` (repeatable) sets a variable for the job; values of `*TOKEN*`/`*PASSWORD*`/`*SECRET*`/`*KEY*` keys are recorded as `***`. |
+| `proc start ... --heavy [--force-concurrent] -- CMD...` | Mark the job RAM-heavy: it refuses to start (exit 2) while another heavy job runs, a lock between cooperating jobs, not a memory limit. `--force-concurrent` skips the check. |
 | `proc start --at TIME --name N -- CMD...` | Schedule `CMD` for `TIME` (ISO 8601 with a zone) instead of running it: a registry record with status `scheduled`, no process. A per-minute launcher starts it once. Called from inside a running job with its own `--name`, it sets that job's next run, so a "run or retry later" script exits instead of sleeping. |
 | `proc reschedule N --at TIME` | Move a scheduled job's start; from inside a running job, set its own next run. |
 | `proc launcher status\|install\|uninstall` | The per-minute launcher (systemd user timer, cron fallback); `start --at` installs it when missing. `proc launch-due` is what it runs. |
 | `proc hook status\|install\|uninstall` | Claude Code hook that lets a project's own Bash checks judge the command behind `proc start ... -- CMD` as if `CMD` were the call; `start` registers it in the user's Claude settings once when missing. |
-| `proc list [--json]` (alias `ls`) | Table: `NAME PID STATUS ELAPSED TIMEOUT START CMD`, running jobs first, then scheduled jobs by start time. Reconciles liveness on read. `--json`: array of `status --json` objects. |
-| `proc status N [--json]` | First line is the verdict (`N: running pid=1234 for 2h13m`, `N: exited rc=0 after 41m5s`, `N: killed (timeout) after 1h0m`), second the log path, then details. `--json`: metadata with `status`/`alive`/`exit_code` first. |
+| `proc list [--json]` (alias `ls`) | Table: `NAME PID STATUS ELAPSED TIMEOUT START CMD`, running jobs first, then scheduled jobs by start time. Reads only the live index, so it costs the same at any registry size, and reconciles liveness on read. `--json`: array of light per-job objects; `--json --full` the whole record of each. |
+| `proc list --running\|--scheduled\|--session ID\|--all\|--exited --since H` | Narrow or widen the listing: one state, the jobs one Claude session started, every record including history (slow on a large registry), or the jobs that ended in the last `H` hours. |
+| `proc status N [--json]` | First line is the verdict (`N: running pid=1234 for 2h13m`, `N: exited rc=0 after 41m5s`, `N: killed (timeout) after 1h0m`), second the log path, then details, including `cost:` for a finished job (CPU time, bytes read and written, peak RSS). `--json`: metadata with `status`/`alive`/`exit_code` first. |
 | `proc logs N [--since TS] [--tail K] [--follow]` | Print the log, the lines after `TS`, last `K` lines, or follow. `--follow` auto-stops on terminal status or a 600s cap — never hangs forever. |
 | `proc wait N [--timeout S]` | Block until terminal and print the verdict line. Exit 0 if it exited rc 0, 5 if it ended any other way, 3 if still running when the cap (default 3600s) hits. |
-| `proc kill N [--force]` | SIGTERM the whole session, 10s grace, then SIGKILL (or immediate SIGKILL with `--force`). Registry-only, PID-reuse-guarded. |
+| `proc kill N [--force]` | SIGTERM the whole session, 10s grace, then SIGKILL (or immediate SIGKILL with `--force`). Registry-only, PID-reuse-guarded. Exit 8 and no `killed` status when a session member survives SIGKILL. |
 | `proc rm N [--force]` | Remove a terminal job's metadata + log + rc sidecar. Refuses a running job unless `--force` (which kills it first). |
 | `proc clean [--older-than H]` | Remove terminal jobs (default: older than 24h). |
+| `proc archive` | Move every finished record still in the live folder into its history day folder at once (the daily sweep does it for jobs older than a day; this is the one-time move for an old flat registry). |
+| `proc reindex` | Rebuild the live index and the per-session lists from every record; for use after records were edited or deleted by hand. |
 
 ## Examples
 
@@ -149,10 +155,32 @@ The guarantees that make `proc` safe to grant a blanket allow-list entry:
   (`start_new_session`); `kill` signals every member of the session, repeatedly
   during the drain, so `timeout`'s nested process group and any late-forked
   descendant are all reached (a one-shot `killpg` misses them).
+- **Each member re-checked before its signal.** `kill` scans `/proc` for the session's members,
+  then pins each with a pidfd and re-reads its starttime and session just before signaling, so
+  a pid that exited and was reused after the scan is never hit.
 - **Concurrency-safe.** Registry writes are serialized with an `fcntl.flock`;
   parallel `proc` invocations can't corrupt the JSON.
 - **No hangs.** `start` returns immediately; `logs --follow` and `wait` have hard
   caps. Designed for an unattended agent.
+
+## What `proc` does not do
+
+Small on purpose (see [VISION.md](VISION.md)):
+
+- **It does not keep a process alive across a reboot or a WSL shutdown.** The registry is on
+  disk, so the job's record and log are still there; a process that was running is gone, and
+  `status` says `exited` with the exit code it left, if any.
+- **It does not limit resources.** `--heavy` is a lock between jobs that opt in, `--timeout` a
+  wall-clock cap. There is no memory, CPU or process-count limit; jobs started by the launcher
+  run in their own systemd scope only to keep systemd's accounting tidy.
+- **It does not model work.** No dependencies between jobs, no retry policy: a job retries by
+  scheduling its own next run (`proc reschedule`). Workflow, attempts and results belong to the
+  layer above, which uses `proc` as its execution backend.
+- **It does not reach a process that left the session.** A descendant that calls `setsid()` is
+  outside the job's session and `kill` does not signal it.
+- **Scheduled starts are accurate to about a minute**, since the launcher runs once a minute.
+- **It is Linux-only** (`/proc`), single host, single user, and meant for agents rather than
+  for a person at a terminal.
 
 ## Status values
 
@@ -165,11 +193,24 @@ process is now reconciled to `exited` with its real exit code recovered from the
 ```
 $PROC_HOME/                # default ~/.local/state/proc/
   .lock                    # flock target for registry serialization
+  .live-index              # running and scheduled jobs only; what `list` and `launch-due` read
+  sessions/<session-id>    # names of the jobs one Claude session started (`list --session`)
   <name>.json              # job metadata
   <name>.log               # combined stdout + stderr
-  <name>.rc                # exit code the wrapper recorded
+  <name>.rc                # exit code and cost the wrapper recorded
+  <name>.rss               # peak RSS, transient: folded into .rc when the job ends
   <name>.schedenv          # 0600: environment a scheduled run starts with (until it starts)
+  history/.swept           # UTC day of the last daily sweep
+  history/<YYYY-MM-DD>/    # finished jobs (record, log, .rc), by UTC day of their end;
+                           #   whole folders older than 14 days are deleted
+  cost/<YYYY-MM-DD>.jsonl  # one line per `launch-due` pass: its own CPU, I/O and lock time
+  history_days, cost_alert_cmd   # optional settings; for the default home they are read from
+                           #   ~/.config/proc/, for another PROC_HOME from here
 ```
+
+A finished job stays at its flat path for at least 24 hours (so `status` and its log are where
+they were right after `proc wait`), then the first `proc` call of a UTC day moves it into
+`history/`. `status`, `logs`, `wait`, `rm` and `list --all` find it in either place.
 
 All timestamps are UTC.
 

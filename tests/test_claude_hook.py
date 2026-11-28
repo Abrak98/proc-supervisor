@@ -11,6 +11,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -285,7 +286,7 @@ def test_default_account_settings_are_read(tmp_path):
 def test_account_and_project_hooks_run_once_and_skip_ours(tmp_path):
     marker = tmp_path / "ran"
     hook = f"cat >/dev/null; echo ran >> {marker}"
-    own = f"echo {claude_hook.HOOK_MARK} >> {marker}; exit 2"
+    own = f"echo {hook_judge.HOOK_MARK} >> {marker}; exit 2"
     project = _project(tmp_path, [_group(hook, own)], local=[_group(hook)])
     seat = _seat(tmp_path, {"hooks": {"PreToolUse": [_group(hook, own)]}})
     assert _call(
@@ -481,11 +482,41 @@ def test_the_rewrite_notice_names_each_hook_and_its_proposed_command(tmp_path):
     assert f"- hook {tmp_path}/add_prefix.sh: nice ls" in notice
 
 
-def test_a_hook_label_is_its_script_or_a_short_command():
-    label = claude_hook._hook_label('d="$X"; exec "$h/.claude/hooks/block_leading_cd_chain.sh"')
-    assert label == "$h/.claude/hooks/block_leading_cd_chain.sh"
-    assert claude_hook._hook_label("true  &&\n  echo hi") == "true && echo hi"
-    assert len(claude_hook._hook_label("x " * 200)) <= 160
+def _rewrite_notice(tmp_path: Path, hook_command: str) -> str:
+    project = _project(tmp_path, [_group(hook_command)])
+    code, out, _ = _call(project, "proc start --name p -- ls")
+    assert code == 0
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+_REWRITE_OUTPUT = (
+    'printf \'%s\' \'{"hookSpecificOutput":{"updatedInput":{"command":"echo safe"}}}\''
+)
+
+
+def test_a_rewriting_hook_is_named_by_its_script_when_the_command_runs_one(tmp_path):
+    hooks = tmp_path / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    script = hooks / "rewrite_it.sh"
+    script.write_text("#!/bin/sh\ncat >/dev/null\n" + _REWRITE_OUTPUT + "\n")
+    script.chmod(0o755)
+    notice = _rewrite_notice(
+        tmp_path, f'd="$X"; h="{tmp_path}"; exec "$h/.claude/hooks/rewrite_it.sh"'
+    )
+    assert "- hook $h/.claude/hooks/rewrite_it.sh: echo safe" in notice
+
+
+def test_a_rewriting_hook_without_a_script_is_named_by_its_one_line_command(tmp_path):
+    notice = _rewrite_notice(tmp_path, f"cat >/dev/null  &&\n  {_REWRITE_OUTPUT}")
+    assert f"- hook cat >/dev/null && {_REWRITE_OUTPUT}: echo safe" in notice
+
+
+def test_a_long_hook_command_is_shortened_in_the_rewrite_notice(tmp_path):
+    notice = _rewrite_notice(tmp_path, f"cat >/dev/null; {_REWRITE_OUTPUT}; : {'x ' * 200}")
+    line = next(ln for ln in notice.splitlines() if ln.startswith("- hook "))
+    name = line.removeprefix("- hook ").removesuffix(": echo safe")
+    assert name.endswith("...")
+    assert len(name) <= 160
 
 
 def test_unparseable_input_is_a_refusal_with_a_reason():
@@ -543,7 +574,7 @@ def _seat(tmp_path: Path, settings=None) -> Path:
 def test_install_adds_one_entry_and_keeps_the_rest(tmp_path):
     other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "other.sh"}]}
     seat = _seat(tmp_path, {"model": "x", "hooks": {"PreToolUse": [other], "Stop": []}})
-    st = claude_hook.install(seat)
+    st = hook_judge.install(seat)
     assert st.installed
     data = json.loads((seat / "settings.json").read_text())
     assert data["model"] == "x"
@@ -551,31 +582,31 @@ def test_install_adds_one_entry_and_keeps_the_rest(tmp_path):
     assert data["hooks"]["PreToolUse"][0] == other
     ours = data["hooks"]["PreToolUse"][1]
     assert ours["matcher"] == "Bash"
-    assert ours["hooks"][0]["command"] == claude_hook.hook_command()
+    assert ours["hooks"][0]["command"] == hook_judge.hook_command()
     assert list(seat.glob("settings.json.bak-*-proc-hook"))
-    claude_hook.install(seat)  # idempotent
+    hook_judge.install(seat)  # idempotent
     again = json.loads((seat / "settings.json").read_text())
     assert again == data
 
 
 def test_install_creates_settings_when_missing(tmp_path):
     seat = tmp_path / "newseat"
-    assert claude_hook.install(seat).installed
+    assert hook_judge.install(seat).installed
     assert (seat / "settings.json").is_file()
 
 
 def test_uninstall_removes_only_ours_and_prunes_empties(tmp_path):
     seat = _seat(tmp_path, {"model": "x"})
-    claude_hook.install(seat)
-    st = claude_hook.uninstall(seat)
+    hook_judge.install(seat)
+    st = hook_judge.uninstall(seat)
     assert not st.installed
     assert json.loads((seat / "settings.json").read_text()) == {"model": "x"}
     other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "other.sh"}]}
     seat2 = tmp_path / "seat2"
     seat2.mkdir()
     (seat2 / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": [other]}}))
-    claude_hook.install(seat2)
-    claude_hook.uninstall(seat2)
+    hook_judge.install(seat2)
+    hook_judge.uninstall(seat2)
     assert json.loads((seat2 / "settings.json").read_text()) == {"hooks": {"PreToolUse": [other]}}
 
 
@@ -586,13 +617,13 @@ def test_ensure_installs_once_and_respects_an_uninstall(tmp_path):
     env = {"CLAUDE_CONFIG_DIR": str(seat)}
     note = REAL_ENSURE_HOOK(base, env)
     assert note and str(seat / "settings.json") in note
-    assert claude_hook.status(seat).installed
+    assert hook_judge.status(seat).installed
     assert REAL_ENSURE_HOOK(base, env) is None  # already there
-    claude_hook.uninstall(seat, base)
+    hook_judge.uninstall(seat, base)
     assert REAL_ENSURE_HOOK(base, env) is None  # switched off by the user
-    assert not claude_hook.status(seat).installed
-    claude_hook.install(seat, base)  # an explicit install clears the opt-out
-    claude_hook.uninstall(seat)
+    assert not hook_judge.status(seat).installed
+    hook_judge.install(seat, base)  # an explicit install clears the opt-out
+    hook_judge.uninstall(seat)
     assert REAL_ENSURE_HOOK(base, env) is not None
 
 
@@ -601,14 +632,14 @@ def test_ensure_repoints_an_entry_whose_interpreter_is_gone(tmp_path):
     base = tmp_path / "base"
     base.mkdir()
     env = {"CLAUDE_CONFIG_DIR": str(seat)}
-    claude_hook.install(seat)
+    hook_judge.install(seat)
     data = json.loads((seat / "settings.json").read_text())
     data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = (
-        f"{tmp_path}/gone/bin/python -I -m {claude_hook.HOOK_MARK}"
+        f"{tmp_path}/gone/bin/python -I -m {hook_judge.HOOK_MARK}"
     )
     (seat / "settings.json").write_text(json.dumps(data))
     assert REAL_ENSURE_HOOK(base, env) is not None
-    assert claude_hook.status(seat).note == ""
+    assert hook_judge.status(seat).note == ""
     assert REAL_ENSURE_HOOK(base, env) is None
 
 
@@ -675,19 +706,19 @@ def test_wrapped_hook_status_and_repoint(tmp_path, prefix):
         prefix = wrapper + " "
     elif prefix == "bash-absolute":
         prefix = "bash " + wrapper + " "
-    claude_hook.install(seat)
+    hook_judge.install(seat)
     data = json.loads((seat / "settings.json").read_text())
     entry = data["hooks"]["PreToolUse"][0]["hooks"][0]
-    entry["command"] = prefix + claude_hook.hook_command()
+    entry["command"] = prefix + hook_judge.hook_command()
     (seat / "settings.json").write_text(json.dumps(data))
-    assert claude_hook.status(seat).note == ""
+    assert hook_judge.status(seat).note == ""
     env = {"CLAUDE_CONFIG_DIR": str(seat)}
     assert REAL_ENSURE_HOOK(tmp_path / "registry", env) is None
-    entry["command"] = prefix + claude_hook.hook_command(str(tmp_path / "gone/bin/python"))
+    entry["command"] = prefix + hook_judge.hook_command(str(tmp_path / "gone/bin/python"))
     (seat / "settings.json").write_text(json.dumps(data))
-    assert claude_hook.status(seat).note == "pinned to another interpreter"
+    assert hook_judge.status(seat).note == "pinned to another interpreter"
     assert REAL_ENSURE_HOOK(tmp_path / "registry", env) is not None
-    assert claude_hook.status(seat).note == ""
+    assert hook_judge.status(seat).note == ""
 
 
 @pytest.fixture(params=[False, True], ids=["default-source", "custom-source"])
@@ -722,16 +753,27 @@ def shared_settings(tmp_path, monkeypatch, request):
     return seats, source, calls
 
 
+def _registered_commands(source: Path) -> list[str]:
+    """The hook commands the shared source registers, found by the exported mark."""
+    groups = json.loads(source.read_text()).get("hooks", {}).get("PreToolUse", [])
+    return [
+        entry["command"]
+        for group in groups
+        for entry in group.get("hooks", [])
+        if hook_judge.HOOK_MARK in entry.get("command", "")
+    ]
+
+
 def test_shared_install_syncs_both_seats_and_uninstall_stays_removed(shared_settings):
     seats, source, calls = shared_settings
-    assert claude_hook.install(seats[1]).note == ""
-    command = claude_hook._ours(json.loads(source.read_text()))[0]["command"]
-    assert command == "$HOME/.claude/hooks/_hook_wrap.sh " + claude_hook.hook_command()
-    assert all(claude_hook.status(seat).installed for seat in seats)
+    assert hook_judge.install(seats[1]).note == ""
+    command = _registered_commands(source)[0]
+    assert command == "$HOME/.claude/hooks/_hook_wrap.sh " + hook_judge.hook_command()
+    assert all(hook_judge.status(seat).installed for seat in seats)
     assert len(calls) == 1
-    claude_hook.uninstall(seats[0])
-    assert not claude_hook._ours(json.loads(source.read_text()))
-    assert all(not claude_hook.status(seat).installed for seat in seats)
+    hook_judge.uninstall(seats[0])
+    assert not _registered_commands(source)
+    assert all(not hook_judge.status(seat).installed for seat in seats)
 
 
 def test_shared_ensure_repairs_source_and_does_not_resync_working_hook(shared_settings, tmp_path):
@@ -745,7 +787,7 @@ def test_shared_ensure_repairs_source_and_does_not_resync_working_hook(shared_se
                     {
                         "type": "command",
                         "command": "bash $HOME/.claude/hooks/_hook_wrap.sh "
-                        + claude_hook.hook_command(str(tmp_path / "gone/python")),
+                        + hook_judge.hook_command(str(tmp_path / "gone/python")),
                     }
                 ],
             }
@@ -754,7 +796,7 @@ def test_shared_ensure_repairs_source_and_does_not_resync_working_hook(shared_se
     source.write_text(json.dumps(data))
     env = {**os.environ, "CLAUDE_CONFIG_DIR": str(seats[1])}
     assert REAL_ENSURE_HOOK(tmp_path / "registry", env) is not None
-    assert all(claude_hook.status(seat).note == "" for seat in seats)
+    assert all(hook_judge.status(seat).note == "" for seat in seats)
     assert REAL_ENSURE_HOOK(tmp_path / "registry", env) is None
     assert len(calls) == 1
 
@@ -763,7 +805,7 @@ def test_unmanaged_seat_ignores_existing_shared_source(shared_settings, tmp_path
     _, source, calls = shared_settings
     before = source.read_bytes()
     seat = _seat(tmp_path, {})
-    assert claude_hook.install(seat).installed
+    assert hook_judge.install(seat).installed
     assert source.read_bytes() == before
     assert calls == []
 
@@ -796,7 +838,7 @@ def test_shared_sync_failure_is_reported_without_editing_generated_files(
 
     monkeypatch.setattr(claude_hook.subprocess, "run", fail)
     with pytest.raises(OSError, match="Shared settings sync failed") as raised:
-        claude_hook.install(seats[0])
+        hook_judge.install(seats[0])
     assert raised.value.__cause__ is error
     assert [(seat / "settings.json").read_bytes() for seat in seats] == before
     # Automatic start remains best effort and retries syncing the unapplied source.
@@ -804,7 +846,7 @@ def test_shared_sync_failure_is_reported_without_editing_generated_files(
         REAL_ENSURE_HOOK(tmp_path / "registry", {**os.environ, "CLAUDE_CONFIG_DIR": str(seats[0])})
         is None
     )
-    assert claude_hook._ours(json.loads(source.read_text()))
+    assert _registered_commands(source)
 
 
 # ------------------------------------------------------------------ the common path stays light
@@ -814,45 +856,53 @@ def _bash_payload(command: str, **extra) -> str:
     return json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, **extra})
 
 
+def _judged_command(tmp_path: Path, raw: str) -> str | None:
+    """Runs `main` on the raw payload with a project check that records the command it is
+    shown; returns that command, or None when the check never ran (the call was not judged)."""
+    tmp_path = Path(tempfile.mkdtemp(dir=tmp_path))
+    dump = tmp_path / "judged.txt"
+    project = _project(tmp_path, [_group(f"cat > {dump}")])
+    env = {"PATH": os.environ["PATH"], "CLAUDE_PROJECT_DIR": str(project)}
+    code = claude_hook.main(io.StringIO(raw), io.StringIO(), io.StringIO(), env)
+    assert code == 0
+    return json.loads(dump.read_text())["tool_input"]["command"] if dump.exists() else None
+
+
 @pytest.mark.parametrize(("command", "inner"), UNWRAP_FORMS)
-def test_the_fast_test_admits_every_form_the_judge_unwraps(command, inner):
-    """The test that decides judge-or-return is the unwrap scan itself, on the command: every
-    form the unwrap tests use is admitted, with the same inner command."""
-    found = claude_hook._command_to_judge(_bash_payload(command))
-    assert found is not None
-    assert found[1] == inner
+def test_the_fast_test_admits_every_form_the_judge_unwraps(tmp_path, command, inner):
+    """Every form the unwrap tests use reaches the judge, with the same inner command."""
+    assert _judged_command(tmp_path, _bash_payload(command)) == inner
 
 
 @pytest.mark.parametrize("command", NOT_UNWRAPPED)
-def test_the_fast_test_skips_a_command_the_judge_would_not_unwrap(command):
-    assert claude_hook._command_to_judge(_bash_payload(command)) is None
+def test_the_fast_test_skips_a_command_the_judge_would_not_unwrap(tmp_path, command):
+    assert _judged_command(tmp_path, _bash_payload(command)) is None
 
 
-def test_the_fast_test_reads_the_command_not_the_payload():
+def test_the_fast_test_reads_the_command_not_the_payload(tmp_path):
     """`proc` and `start` elsewhere in the payload (a description, a cwd under /proc) do not
     send an ordinary command to the judge."""
     payload = _bash_payload("ls -la", cwd="/proc/self", description="restart the thing")
-    assert claude_hook._command_to_judge(payload) is None
+    assert _judged_command(tmp_path, payload) is None
     other_tool = json.dumps(
         {"tool_name": "Read", "tool_input": {"command": "proc start --name p -- make"}}
     )
-    assert claude_hook._command_to_judge(other_tool) is None
+    assert _judged_command(tmp_path, other_tool) is None
 
 
-def test_the_fast_test_sees_a_command_written_with_json_escapes():
+def test_the_fast_test_sees_a_command_written_with_json_escapes(tmp_path):
     """`\\u0070roc` is `proc`: the pre-filter on the raw text must not skip it."""
     raw = '{"tool_name": "Bash", "tool_input": {"command": "\\u0070roc start --name p -- make"}}'
-    found = claude_hook._command_to_judge(raw)
-    assert found is not None
-    assert found[1] == "make"
+    assert _judged_command(tmp_path, raw) == "make"
 
 
 @pytest.mark.parametrize(
     "raw", ["proc start {not json", '{"a": 1} trailing proc start', '{"x": 1, "y": "proc start",}']
 )
-def test_the_fast_test_raises_on_an_unreadable_payload(raw):
-    with pytest.raises(ValueError):
-        claude_hook._command_to_judge(raw)
+def test_the_fast_test_refuses_an_unreadable_payload(raw):
+    err = io.StringIO()
+    assert claude_hook.main(io.StringIO(raw), io.StringIO(), err, {}) == 2
+    assert "refused" in err.getvalue()
 
 
 HEAVY_MODULES = (
@@ -881,7 +931,7 @@ def test_the_common_path_imports_no_heavy_module(command):
     standard-library modules (or the judging module) is imported."""
     import subprocess
 
-    src = str(Path(claude_hook.__file__).resolve().parent.parent)
+    src = str(Path(__file__).resolve().parents[1] / "src")
     program = (
         "import io, sys\n"
         f"sys.path.insert(0, {src!r})\n"
@@ -900,11 +950,8 @@ def test_the_common_path_imports_no_heavy_module(command):
     assert result.stdout.strip() == "0 []", result.stderr
 
 
-def test_the_judging_path_still_loads_the_judge():
-    """The other side: a job start does import the judging module, and the names the rest of
-    the code reads from `claude_hook` resolve through it."""
-    from proc_lib import hook_judge
-
-    assert claude_hook.install is hook_judge.install
+def test_an_unknown_name_on_the_hook_module_raises_attribute_error():
+    """The lazy lookup that forwards names to the judging module still refuses a name neither
+    module has."""
     with pytest.raises(AttributeError):
         claude_hook.no_such_name  # noqa: B018

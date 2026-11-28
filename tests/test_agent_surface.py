@@ -29,23 +29,39 @@ LEGACY_KEYS = {
 }
 
 
+def _record(name):
+    """The job's registry record as stored on disk, or None when there is none."""
+    path = core.BASE / f"{name}.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
 def _status_out(capsys, name, **kw) -> str:
     capsys.readouterr()
     assert core.cmd_status(ns(name=name, **kw)) == 0
     return capsys.readouterr().out
 
 
-def test_human_duration_uses_two_most_significant_units():
-    assert core._human_duration(12) == "12s"
-    assert core._human_duration(41 * 60 + 5) == "41m5s"
-    assert core._human_duration(2 * 3600 + 13 * 60 + 59) == "2h13m"
-    assert core._human_duration(3 * 86400 + 4 * 3600) == "3d4h"
+def test_status_verdict_shows_two_most_significant_units(capsys):
+    start("hd", "bash", "-c", "exit 0")
+    wait_terminal("hd")
+    path = core.BASE / "hd.json"
+    meta = json.loads(path.read_text())
+    for secs, shown in [
+        (12, "12s"),
+        (41 * 60 + 5, "41m5s"),
+        (2 * 3600 + 13 * 60 + 59, "2h13m"),
+        (3 * 86400 + 4 * 3600, "3d4h"),
+    ]:
+        meta["end_ts"] = meta["start_ts"] + secs
+        path.write_text(json.dumps(meta))
+        first = _status_out(capsys, "hd").splitlines()[0]
+        assert first == f"hd: exited rc=0 after {shown}"
 
 
 def test_status_first_line_is_running_verdict(capsys):
     start("r", "bash", "-c", "sleep 5")
     lines = _status_out(capsys, "r").splitlines()
-    pid = core._load("r")["pid"]
+    pid = _record("r")["pid"]
     assert re.fullmatch(rf"r: running pid={pid} for \d+s", lines[0])
     assert lines[1] == f"  log: {core.BASE / 'r.log'}"
     core.cmd_kill(ns(name="r", force=True))
@@ -126,7 +142,7 @@ def test_start_env_reaches_job_and_is_recorded(capsys):
     start("e", "bash", "-c", 'echo "foo=$FOO bar=$BAR"', env=["FOO=1", "BAR=a=b"])
     wait_terminal("e")
     assert "foo=1 bar=a=b" in (core.BASE / "e.log").read_text()
-    assert core._load("e")["env"] == {"FOO": "1", "BAR": "a=b"}
+    assert _record("e")["env"] == {"FOO": "1", "BAR": "a=b"}
     assert "  env: FOO=1 BAR=a=b" in _status_out(capsys, "e").splitlines()
 
 
@@ -138,7 +154,7 @@ def test_start_env_secret_values_masked_in_registry_but_real_for_job(capsys):
     raw = (core.BASE / "sec.json").read_text()
     for value in ("t0k", '"pw"', '"s"', '"k"'):
         assert value not in raw
-    recorded = core._load("sec")["env"]
+    recorded = _record("sec")["env"]
     assert recorded == {
         "API_TOKEN": "***",
         "DB_PASSWORD": "***",
@@ -154,14 +170,14 @@ def test_start_env_secret_values_masked_in_registry_but_real_for_job(capsys):
 def test_start_env_malformed_pair_is_usage_error():
     for bad in ("NOEQUALS", "=v", "1X=v", "A-B=v"):
         assert start("bad", "true", env=[bad]) == core.EXIT_USAGE
-        assert core._load("bad") is None
+        assert _record("bad") is None
 
 
 def test_start_env_flag_is_repeatable_via_cli():
     argv = ["start", "--name", "ce", "--cwd", "/tmp", "--env", "A=1", "--env", "B=2"]
     assert cli.main([*argv, "--", "bash", "-c", "exit 0"]) == 0
     wait_terminal("ce")
-    assert core._load("ce")["env"] == {"A": "1", "B": "2"}
+    assert _record("ce")["env"] == {"A": "1", "B": "2"}
 
 
 def _make_legacy(name: str) -> None:
@@ -190,7 +206,7 @@ def test_legacy_running_entry_is_listed_waited_and_killed(capsys):
 
     assert core.cmd_wait(ns(name="old", timeout=0)) == core.EXIT_WAIT_TIMEOUT
     assert core.cmd_kill(ns(name="old", force=True)) == 0
-    assert core._load("old")["status"] == core.KILLED
+    assert _record("old")["status"] == core.KILLED
     assert core.cmd_wait(ns(name="old", timeout=1)) == core.EXIT_JOB_FAILED
 
 

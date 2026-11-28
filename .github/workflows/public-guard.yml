@@ -3,6 +3,12 @@
 # an employer's names, private paths, colleagues' names) is not in the repository: it is the
 # encrypted Actions secret DENYLIST, and the log shows only where a finding is, never the word.
 #
+# Both jobs run only in the public repository (Abrak98/proc-jobs), by the condition on
+# github.repository below. The private repository the tree is maintained in is not guarded: its
+# history holds deny-listed words by design and has no DENYLIST secret, so the same scan there
+# could only fail on every push. What leaves the private repository is scanned before it
+# becomes public (docs/public-release.md).
+#
 # A pull request from a fork gets no secrets, so the deny-list job fails there by design: such a
 # request is merged only by the maintainer, after the same scan runs on his machine in the
 # pre-push hook.
@@ -18,6 +24,7 @@ permissions:
 
 jobs:
   secrets:
+    if: github.repository == 'Abrak98/proc-jobs'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +41,7 @@ jobs:
           ./gitleaks detect --source . --redact --no-banner --exit-code 1
 
   denylist:
+    if: github.repository == 'Abrak98/proc-jobs'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
