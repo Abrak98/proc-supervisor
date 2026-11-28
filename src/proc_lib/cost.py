@@ -40,6 +40,7 @@ __all__ = [
     "alert_command",
     "append_line",
     "finish_launch_due",
+    "is_default_home",
     "over_bounds",
     "raise_alert",
 ]
@@ -146,7 +147,7 @@ def _default_home() -> Path:
     return Path(os.path.expanduser("~/.local/state/proc"))
 
 
-def _is_default_home(base: Path) -> bool:
+def is_default_home(base: Path) -> bool:
     try:
         return base.resolve() == _default_home().resolve()
     except OSError:
@@ -159,7 +160,7 @@ def alert_command(base: Path | None = None) -> list[str] | None:
     The user's configuration (environment variable, ``~/.config/proc``) is for the
     default registry only; every other home reads ``<base>/cost_alert_cmd`` alone.
     `base` None means the default registry."""
-    if base is None or _is_default_home(base):
+    if base is None or is_default_home(base):
         text = os.environ.get(ALERT_ENV, "").strip()
         cfg_file = Path(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"))
         cfg_file = cfg_file / "proc" / ALERT_CONFIG

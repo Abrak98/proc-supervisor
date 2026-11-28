@@ -100,6 +100,10 @@ n/a
 - `proc_lib.core` (`specs/proc_lib/core.spec.md`) — every subcommand's actual implementation.
 
 ## Test cases
+- GIVEN any subcommand, option or exit code the code defines WHEN `CLI_REFERENCE.md` and
+  `README.md` are read THEN each is written down: a section per subcommand naming all its
+  options, every exit code in the table, the README listing every command and the registry's
+  files (`test_docs.py`).
 - GIVEN `proc list --exited --since 12 --json` WHEN parsed (by the fast parser or argparse)
   THEN `exited` is `True` and `since` is `12.0`; `--since` with a non-number goes to argparse
   (`test_history.py`).

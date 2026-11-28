@@ -71,3 +71,17 @@ def wait_terminal(name, deadline_s=10.0) -> dict:
             return m
         time.sleep(0.05)
     return core._load(name)
+
+
+def reap_terminal(name) -> dict:
+    """Wait for a job the test itself started by reaping its wrapper (the test process is
+    its parent), then reconcile once. Unlike `wait_terminal` this has no deadline to miss
+    under load: waitpid returns exactly when the wrapper has exited, and the `.rc` it wrote
+    before exiting is then in place. Only for a job that is certain to end by itself."""
+    import contextlib
+    import os
+
+    pid = core._load(name)["pid"]
+    with contextlib.suppress(ChildProcessError):  # already reaped by subprocess' own cleanup
+        os.waitpid(pid, 0)
+    return core._with_lock(lambda: core._reconcile_and_save(name))

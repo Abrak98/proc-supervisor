@@ -35,8 +35,8 @@ uv run ruff format src/ tests/
    "dumb" supervisor (see `VISION.md` Non-goals); a short discussion up front avoids a PR
    built on scope the maintainer wouldn't take.
 2. Add or update a test for the behavior you're changing.
-3. If the change touches `src/proc_lib/core.py`, `cli.py`, or `heavy_job_lock.py`, update the
-   matching spec under `specs/proc_lib/` in the same PR — every source file under `src/`
+3. If the change touches the engine (`src/proc_lib/core.py` and its modules), `cli.py`, or
+   `heavy_job_lock.py`, update the matching spec under `specs/proc_lib/` in the same PR — every source file under `src/`
    declares a `# spec: <path>` header, and the spec is the permanent contract, not the code
    comments.
 4. `uv run pytest -q` and `uv run ruff check src/ tests/` must both be clean before you open the PR.

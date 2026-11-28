@@ -19,12 +19,16 @@ implies.
 
 ## Engineering rules
 
-- The engine lives in `src/proc_lib/core.py`; the CLI front end in
-  `src/proc_lib/cli.py`. Keep `cli.py` thin.
+- The engine lives in `src/proc_lib/` (`core.py` re-exports it; `registry.py`, `procfs.py`,
+  `spawn.py`, `render.py`, `commands.py`); the CLI front end in `src/proc_lib/cli.py`. Keep
+  `cli.py` thin.
 - Every behavioural change ships with a test. The suite uses real short-lived
   processes against an isolated tmp `PROC_HOME` and runs in seconds — keep it
   that way (no multi-second sleeps; use `KILL_GRACE_SECONDS` monkeypatch for the
   escalation test).
+- A change to a subcommand, an option, an exit code or a file under `$PROC_HOME` updates
+  README.md and CLI_REFERENCE.md in the same commit; `tests/test_docs.py` fails when a command,
+  option or exit code the code defines is missing from them.
 - Gate before commit: `uv run ruff check src/ tests/`, `uv run ruff format src/ tests/`,
   `uv run pytest -q`. All green.
 - State dir is `$PROC_HOME` (default `~/.local/state/proc/`). Never change the

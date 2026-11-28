@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `kill` re-verifies each session member (starttime, session, not dead) right before signaling
+  it, through a pidfd where the kernel supports it, so a pid reused after the `/proc` scan is
+  never signaled.
+- README and CLI_REFERENCE describe the whole current surface: `--heavy`, `list --json --full`
+  and its filters, `archive`, `reindex`, the history and index files, exit code 8, per-job
+  cost, and a section on what `proc` does not do. `tests/test_docs.py` fails when a command,
+  option or exit code is added without them.
+
 - The default state directory is `~/.local/state/proc` (an earlier release used a different directory). A registry that lives
   elsewhere keeps working by setting `PROC_HOME` to it; nothing is moved. The seats whose Claude Code
   settings are generated from a shared source default to `~/.claude` alone; list more through

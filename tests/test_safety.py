@@ -96,3 +96,97 @@ def test_clean_keeps_running_jobs():
     core.cmd_clean(ns(older_than=0))  # 0h cutoff: everything terminal goes
     assert core._load("alive") is not None  # running -> never cleaned
     core.cmd_kill(ns(name="alive", force=True))
+
+
+# --- per-member identity check just before a session signal ------------------- #
+
+
+def _own_session_sleeper():
+    """A real process that leads its own session (sid == pid), the shape of a job."""
+    import subprocess
+
+    p = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    for _ in range(200):
+        if core._read_member(p.pid) is not None:
+            break
+        time.sleep(0.005)
+    return p
+
+
+def test_signal_member_skips_a_pid_whose_starttime_changed():
+    """A pid freed and reused after the scan has another starttime: not signaled."""
+    p = _own_session_sleeper()
+    try:
+        st, sid, _ = core._read_member(p.pid)
+        assert core._signal_member(p.pid, st + 1, sid, 15) is False
+        time.sleep(0.05)
+        assert p.poll() is None  # untouched
+        assert core._signal_member(p.pid, st, sid, 15) is True
+        assert p.wait(timeout=10) == -15
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_signal_member_skips_a_pid_that_left_the_session():
+    p = _own_session_sleeper()
+    try:
+        st, sid, _ = core._read_member(p.pid)
+        assert core._signal_member(p.pid, st, sid + 1, 15) is False
+        time.sleep(0.05)
+        assert p.poll() is None
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_signal_member_skips_a_zombie():
+    import subprocess
+
+    p = subprocess.Popen(["true"], start_new_session=True)
+    for _ in range(400):  # exited but not reaped: a zombie
+        m = core._read_member(p.pid)
+        if m and m[2] == "Z":
+            break
+        time.sleep(0.005)
+    try:
+        m = core._read_member(p.pid)
+        assert m and m[2] == "Z"
+        assert core._signal_member(p.pid, m[0], m[1], 15) is False
+    finally:
+        p.wait()
+
+
+def test_signal_session_does_not_signal_a_member_that_the_scan_mislabels(monkeypatch):
+    """The scan saw the pid with a starttime it no longer has (reuse after the scan):
+    the session signal leaves it alone and counts nothing."""
+    p = _own_session_sleeper()
+    try:
+        st, sid, _ = core._read_member(p.pid)
+        monkeypatch.setattr(core, "_session_scan", lambda s: [(p.pid, st + 7)])
+        assert core._signal_session(sid, 15) == 0
+        time.sleep(0.05)
+        assert p.poll() is None
+        monkeypatch.undo()
+        assert core._signal_session(sid, 15) == 1
+        assert p.wait(timeout=10) == -15
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_signal_member_without_pidfd_support_still_verifies(monkeypatch):
+    def no_pidfd(pid):
+        raise OSError(38, "ENOSYS")
+
+    monkeypatch.setattr(core.os, "pidfd_open", no_pidfd)
+    p = _own_session_sleeper()
+    try:
+        st, sid, _ = core._read_member(p.pid)
+        assert core._signal_member(p.pid, st + 1, sid, 15) is False
+        assert p.poll() is None
+        assert core._signal_member(p.pid, st, sid, 15) is True
+        assert p.wait(timeout=10) == -15
+    finally:
+        p.kill()
+        p.wait()

@@ -143,6 +143,8 @@ is nothing to unwrap.
 ## Methods
 - `unwrap_command(command) -> str | None` — the command without its `proc start ... --`
   prefixes, None when there is none.
+- `shell_words(text)`, `skip_substitution(text, i) -> int`, `is_assignment(value) -> bool` — the
+  scanner pieces `hook_judge` reuses to read a hook condition's command (exported in `__all__`).
 - `matching_hooks(paths, tool_name, inner) -> list[Hook]` — matching command hooks from
   account then project settings, conditions evaluated on `inner`, each command once.
 - `run_hook(hook, payload, env) -> Verdict`, `combine(verdicts) -> Verdict`.

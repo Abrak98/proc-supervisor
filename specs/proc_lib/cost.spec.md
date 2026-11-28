@@ -67,6 +67,8 @@ line to proc's own daily file, and raises one alert per day when it exceeds its 
 - `over_bounds(stats, bounds) -> list[str]`.
 - `append_line(base, record, today=None)` — the O_APPEND write plus the daily prune.
 - `alert_command(base=None) -> list[str] | None`, `raise_alert(base, path, record, bound) -> bool`.
+- `is_default_home(base) -> bool` — whether `base` is the default registry (`~/.local/state/proc`); the
+  user's alert and history settings apply to that registry only.
 - `finish_launch_due(base, probe, *, entries, launched, failed, finalised, lock_wait_s,
   lock_hold_s)` — build the line, apply the bounds, append, alert; never raises.
 
